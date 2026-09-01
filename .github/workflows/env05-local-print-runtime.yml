@@ -1,0 +1,130 @@
+name: ENV-05 Local Print Service Runtime
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  env05-runtime:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Focused syntax and package checks
+        shell: pwsh
+        run: |
+          node --check server.js
+          $pkg = Get-Content package.json | ConvertFrom-Json
+          if ($pkg.scripts.start -ne 'node server.js') { throw 'Unexpected start script' }
+          Write-Host 'ENV05_FOCUSED_CHECK_PASS=true'
+
+      - name: Start real service and exercise runtime paths
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PORT = '43105'
+          $env:PRINTER_NAME = 'ENV05_VIRTUAL_PRINTER'
+          $env:SUMATRA_PATH = 'C:\__env05_missing__\SumatraPDF.exe'
+          $env:CORS_ORIGIN = 'http://127.0.0.1:3000'
+
+          $stdout = Join-Path $env:RUNNER_TEMP 'env05-service.out.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'env05-service.err.log'
+          $proc = Start-Process -FilePath node -ArgumentList 'server.js' -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $status = Invoke-RestMethod -Uri 'http://127.0.0.1:43105/status' -Method Get -TimeoutSec 2
+                $ready = $true
+                break
+              } catch {}
+            }
+            if (-not $ready) {
+              Get-Content $stdout -ErrorAction SilentlyContinue
+              Get-Content $stderr -ErrorAction SilentlyContinue
+              throw 'Print service did not become ready'
+            }
+
+            if ($status.connected -ne $true) { throw 'status.connected was not true' }
+            if ($status.mode -ne 'windows-spooler') { throw "Unexpected mode: $($status.mode)" }
+            if ($status.printer -ne 'ENV05_VIRTUAL_PRINTER') { throw "Unexpected printer: $($status.printer)" }
+            Write-Host "ENV05_STATUS_CONNECTED=$($status.connected)"
+            Write-Host "ENV05_STATUS_MODE=$($status.mode)"
+            Write-Host "ENV05_STATUS_PRINTER=$($status.printer)"
+
+            $printers = Invoke-RestMethod -Uri 'http://127.0.0.1:43105/printers' -Method Get -TimeoutSec 10
+            if ($null -eq $printers.printers) { throw 'printers response missing printers array' }
+            Write-Host "ENV05_PRINTER_ENUMERATION_COUNT=$($printers.printers.Count)"
+
+            $payload = @{
+              shopName = 'ENV05 Runtime Store'
+              billNo = 'ENV05-001'
+              payment = 'cash'
+              items = @(@{ name = 'Runtime Item'; qty = 1; rate = 10 })
+              subtotal = 10
+              gst = 0
+              discount = 0
+              total = 10
+              printConfig = @{ paperWidth = 58; fontStyle = 'A'; fontScale = 1 }
+            } | ConvertTo-Json -Depth 6
+
+            $printStatus = 0
+            $printBody = ''
+            try {
+              Invoke-WebRequest -Uri 'http://127.0.0.1:43105/print' -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 10 | Out-Null
+              throw 'Expected print request to fail without SumatraPDF'
+            } catch {
+              if ($_.Exception.Response) {
+                $printStatus = [int]$_.Exception.Response.StatusCode
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $printBody = $reader.ReadToEnd()
+              } else {
+                throw
+              }
+            }
+            if ($printStatus -ne 500) { throw "Expected HTTP 500 virtual print fallback; got $printStatus" }
+            if ($printBody -notmatch 'SumatraPDF not found') { throw "Unexpected print failure body: $printBody" }
+            Write-Host "ENV05_VIRTUAL_PRINT_HTTP=$printStatus"
+            Write-Host "ENV05_VIRTUAL_PRINT_EXPECTED_FAILURE=true"
+
+            if (-not (Test-Path 'temp.txt')) { throw 'Receipt output temp.txt was not created' }
+            $receipt = Get-Content 'temp.txt' -Raw
+            if ($receipt -notmatch 'ENV05 Runtime Store' -or $receipt -notmatch 'ENV05-001' -or $receipt -notmatch 'Runtime Item') {
+              throw 'Receipt output did not contain expected runtime data'
+            }
+            Write-Host 'ENV05_RECEIPT_OUTPUT_WRITTEN=true'
+
+            $alive = -not $proc.HasExited
+            if (-not $alive) { throw 'Service exited during runtime verification' }
+            Write-Host "ENV05_PROCESS_ALIVE=$alive"
+            Write-Host 'ENV05_RUNTIME_SIMULATION_PASS=true'
+            Write-Host 'ENV05_PHYSICAL_WINDOWS_PRINTER_ACCEPTANCE=NOT_YET_VERIFIED'
+
+            Get-Content $stdout -ErrorAction SilentlyContinue
+            Get-Content $stderr -ErrorAction SilentlyContinue
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: env05-runtime-evidence
+          path: |
+            temp.txt
+            ${{ runner.temp }}/env05-service.out.log
+            ${{ runner.temp }}/env05-service.err.log
+          if-no-files-found: ignore
