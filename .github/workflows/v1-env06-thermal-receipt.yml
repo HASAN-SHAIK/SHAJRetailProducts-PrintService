@@ -1,0 +1,150 @@
+name: V1 ENV-06 Thermal Receipt Virtual Acceptance
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "server.js"
+      - "package.json"
+      - "package-lock.json"
+      - "tests/env06-thermal-receipt.acceptance.mjs"
+      - ".github/workflows/v1-env06-thermal-receipt.yml"
+  workflow_dispatch:
+
+jobs:
+  env06-thermal-receipt:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Smallest focused automated acceptance
+        shell: pwsh
+        run: |
+          node --check server.js
+          node tests/env06-thermal-receipt.acceptance.mjs
+
+      - name: Relevant repository suite inventory
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $scripts = $pkg.scripts.PSObject.Properties.Name
+          Write-Host "ENV06_PACKAGE_SCRIPTS=$($scripts -join ',')"
+          if ($scripts -contains 'test') {
+            npm test
+          } else {
+            Write-Host 'ENV06_BROADER_TEST_SUITE=NOT_PRESENT_IN_REPOSITORY'
+          }
+
+      - name: Windows virtual print runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $port = 43107
+          $printer = Get-Printer | Select-Object -First 1 -ExpandProperty Name
+          if (-not $printer) {
+            Write-Host 'ENV06_WINDOWS_PRINTER_ENUMERATION=NONE'
+            $printer = 'ENV06_VIRTUAL_POS58'
+          } else {
+            Write-Host "ENV06_WINDOWS_PRINTER_ENUMERATION=$printer"
+          }
+
+          $fake = Join-Path $PWD 'fake-sumatra.cmd'
+          $argsFile = Join-Path $PWD 'fake-sumatra-args.txt'
+          $cmd = "@echo off`r`necho %* > `"$argsFile`"`r`nexit /b 0`r`n"
+          Set-Content -Path $fake -Value $cmd -Encoding Ascii
+
+          $env:PORT = [string]$port
+          $env:PRINTER_NAME = $printer
+          $env:SUMATRA_PATH = $fake
+          $env:SUMATRA_PRINT_SETTINGS = 'noscale'
+          $env:CENTER_HEADER = '1'
+          $env:LEFT_MARGIN_SPACES = '0'
+
+          $stdout = Join-Path $PWD 'env06-service.out.log'
+          $stderr = Join-Path $PWD 'env06-service.err.log'
+          $proc = Start-Process node -ArgumentList 'server.js' -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              try {
+                $status = Invoke-RestMethod -Uri "http://127.0.0.1:$port/status" -TimeoutSec 2
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Milliseconds 250
+              }
+            }
+            if (-not $ready) { throw 'Print service did not become ready' }
+
+            Write-Host "ENV06_STATUS_CONNECTED=$($status.connected)"
+            Write-Host "ENV06_STATUS_MODE=$($status.mode)"
+            Write-Host "ENV06_STATUS_PRINTER=$($status.printer)"
+
+            $payload = @{
+              shopName = 'SHAJ TEST MART'
+              billNo = 'ENV06-002'
+              date = '2026-09-01'
+              time = '15:20'
+              payment = 'cash'
+              items = @(
+                @{ name = 'Premium Basmati Rice Five Kilogram Bag'; qty = 2; rate = 125.5 },
+                @{ name = 'Milk 500ml'; qty = 1; rate = 32 }
+              )
+              subtotal = 283
+              gst = 14.15
+              discount = 3
+              total = 294.15
+              printConfig = @{ paperWidth = 58; fontStyle = 'A'; fontScale = 1 }
+            } | ConvertTo-Json -Depth 8
+
+            $print = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$port/print" -ContentType 'application/json' -Body $payload -TimeoutSec 10
+            if (-not $print.success) { throw "Expected print success from virtual Sumatra boundary: $($print | ConvertTo-Json -Compress)" }
+            Write-Host 'ENV06_VIRTUAL_PRINT_HTTP=200'
+            Write-Host 'ENV06_VIRTUAL_PRINT_SUCCESS=true'
+
+            $tempPath = Join-Path $PWD 'temp.txt'
+            if (-not (Test-Path $tempPath)) { throw 'temp.txt was not generated' }
+            $receipt = Get-Content $tempPath -Raw
+            foreach ($token in @('SHAJ TEST MART','Bill No: ENV06-002','Payment: CASH','Premium Basmati','Milk 500ml','Subtotal: 283','GST: 14.15','Discount: 3','TOTAL: 294.15','Thank you! Visit again')) {
+              if (-not $receipt.Contains($token)) { throw "Receipt missing token: $token" }
+            }
+
+            $lines = @($receipt -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+            $max = ($lines | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
+            if ($max -gt 32) { throw "58mm receipt line exceeds 32 chars: $max" }
+            Write-Host "ENV06_MAX_LINE_LENGTH=$max"
+            Write-Host "ENV06_RECEIPT_LINES=$($lines.Count)"
+
+            if (-not (Test-Path $argsFile)) { throw 'Fake Sumatra invocation was not captured' }
+            $args = Get-Content $argsFile -Raw
+            if (-not $args.Contains('-print-to')) { throw 'Sumatra invocation missing -print-to' }
+            if (-not $args.Contains($printer)) { throw "Sumatra invocation missing printer: $printer" }
+            if (-not $args.Contains('temp.txt')) { throw 'Sumatra invocation missing receipt file' }
+            if (-not $args.Contains('-print-settings')) { throw 'Sumatra invocation missing print settings' }
+            Write-Host "ENV06_SUMATRA_ARGS=$args"
+
+            $service = Get-Process -Id $proc.Id -ErrorAction Stop
+            Write-Host "ENV06_PROCESS_ALIVE=$($null -ne $service)"
+            Write-Host 'ENV06_SOFTWARE_RUNTIME_PASS=true'
+            Write-Host 'ENV06_PHYSICAL_THERMAL_PRINTER_ACCEPTANCE=NOT_YET_VERIFIED'
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+          }
+
+      - name: Certification verdict
+        shell: pwsh
+        run: |
+          Write-Host 'ENV06_FINAL=PARTIALLY_VERIFIED'
+          Write-Host 'ENV06_REASON=Software receipt generation and Windows spooler-facing invocation are verified; physical thermal paper output is NOT YET VERIFIED.'
