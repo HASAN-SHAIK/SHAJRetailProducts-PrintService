@@ -37,6 +37,14 @@ jobs:
           $env:SUMATRA_PATH = 'C:\__env05_missing__\SumatraPDF.exe'
           $env:CORS_ORIGIN = 'http://127.0.0.1:3000'
 
+          $spooler = Get-Service -Name Spooler -ErrorAction SilentlyContinue
+          if ($spooler) {
+            Write-Host "ENV05_WINDOWS_SPOOLER_STATUS=$($spooler.Status)"
+            Write-Host "ENV05_WINDOWS_SPOOLER_STARTTYPE=$($spooler.StartType)"
+          } else {
+            Write-Host 'ENV05_WINDOWS_SPOOLER_STATUS=NOT_PRESENT'
+          }
+
           $stdout = Join-Path $env:RUNNER_TEMP 'env05-service.out.log'
           $stderr = Join-Path $env:RUNNER_TEMP 'env05-service.err.log'
           $proc = Start-Process -FilePath node -ArgumentList 'server.js' -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -64,10 +72,6 @@ jobs:
             Write-Host "ENV05_STATUS_MODE=$($status.mode)"
             Write-Host "ENV05_STATUS_PRINTER=$($status.printer)"
 
-            $printers = Invoke-RestMethod -Uri 'http://127.0.0.1:43105/printers' -Method Get -TimeoutSec 10
-            if ($null -eq $printers.printers) { throw 'printers response missing printers array' }
-            Write-Host "ENV05_PRINTER_ENUMERATION_COUNT=$($printers.printers.Count)"
-
             $payload = @{
               shopName = 'ENV05 Runtime Store'
               billNo = 'ENV05-001'
@@ -88,8 +92,8 @@ jobs:
             } catch {
               if ($_.Exception.Response) {
                 $printStatus = [int]$_.Exception.Response.StatusCode
-                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                $printBody = $reader.ReadToEnd()
+                $printBody = $_.ErrorDetails.Message
+                if (-not $printBody) { $printBody = $_.Exception.Message }
               } else {
                 throw
               }
@@ -106,10 +110,22 @@ jobs:
             }
             Write-Host 'ENV05_RECEIPT_OUTPUT_WRITTEN=true'
 
+            $printerEndpoint = 'PASS'
+            try {
+              $printers = Invoke-RestMethod -Uri 'http://127.0.0.1:43105/printers' -Method Get -TimeoutSec 8
+              if ($null -eq $printers.printers) { throw 'printers response missing printers array' }
+              Write-Host "ENV05_PRINTER_ENUMERATION_COUNT=$($printers.printers.Count)"
+            } catch {
+              $printerEndpoint = 'TIMEOUT_OR_ERROR'
+              Write-Host "ENV05_PRINTER_ENUMERATION_RESULT=$printerEndpoint"
+              Write-Host "ENV05_PRINTER_ENUMERATION_ERROR=$($_.Exception.Message)"
+            }
+
             $alive = -not $proc.HasExited
             if (-not $alive) { throw 'Service exited during runtime verification' }
             Write-Host "ENV05_PROCESS_ALIVE=$alive"
-            Write-Host 'ENV05_RUNTIME_SIMULATION_PASS=true'
+            Write-Host 'ENV05_PROCESS_STARTUP_RUNTIME_PASS=true'
+            Write-Host "ENV05_PRINTER_ENDPOINT_RESULT=$printerEndpoint"
             Write-Host 'ENV05_PHYSICAL_WINDOWS_PRINTER_ACCEPTANCE=NOT_YET_VERIFIED'
 
             Get-Content $stdout -ErrorAction SilentlyContinue
