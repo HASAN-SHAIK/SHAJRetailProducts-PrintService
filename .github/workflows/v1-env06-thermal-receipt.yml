@@ -27,12 +27,15 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Smallest focused automated acceptance
+        id: focused
+        continue-on-error: true
         shell: pwsh
         run: |
           node --check server.js
           node tests/env06-thermal-receipt.acceptance.mjs
 
       - name: Relevant repository suite inventory
+        if: always()
         shell: pwsh
         run: |
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
@@ -45,6 +48,9 @@ jobs:
           }
 
       - name: Windows virtual print runtime
+        id: runtime
+        if: always()
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -119,12 +125,6 @@ jobs:
               if (-not $receipt.Contains($token)) { throw "Receipt missing token: $token" }
             }
 
-            $lines = @($receipt -split "`r?`n" | Where-Object { $_.Length -gt 0 })
-            $max = ($lines | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
-            if ($max -gt 32) { throw "58mm receipt line exceeds 32 chars: $max" }
-            Write-Host "ENV06_MAX_LINE_LENGTH=$max"
-            Write-Host "ENV06_RECEIPT_LINES=$($lines.Count)"
-
             if (-not (Test-Path $argsFile)) { throw 'Fake Sumatra invocation was not captured' }
             $args = Get-Content $argsFile -Raw
             if (-not $args.Contains('-print-to')) { throw 'Sumatra invocation missing -print-to' }
@@ -135,8 +135,15 @@ jobs:
 
             $service = Get-Process -Id $proc.Id -ErrorAction Stop
             Write-Host "ENV06_PROCESS_ALIVE=$($null -ne $service)"
-            Write-Host 'ENV06_SOFTWARE_RUNTIME_PASS=true'
+
+            $lines = @($receipt -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+            $max = ($lines | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
+            Write-Host "ENV06_MAX_LINE_LENGTH=$max"
+            Write-Host "ENV06_RECEIPT_LINES=$($lines.Count)"
             Write-Host 'ENV06_PHYSICAL_THERMAL_PRINTER_ACCEPTANCE=NOT_YET_VERIFIED'
+            if ($max -gt 32) { throw "58mm receipt line exceeds 32 chars: $max" }
+
+            Write-Host 'ENV06_SOFTWARE_RUNTIME_PASS=true'
           } finally {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
             if (Test-Path $stdout) { Get-Content $stdout }
@@ -144,7 +151,15 @@ jobs:
           }
 
       - name: Certification verdict
+        if: always()
         shell: pwsh
         run: |
+          Write-Host 'ENV06_FOCUSED=${{ steps.focused.outcome }}'
+          Write-Host 'ENV06_RUNTIME=${{ steps.runtime.outcome }}'
+          Write-Host 'ENV06_PHYSICAL_THERMAL_PRINTER_ACCEPTANCE=NOT_YET_VERIFIED'
+          if ('${{ steps.focused.outcome }}' -ne 'success' -or '${{ steps.runtime.outcome }}' -ne 'success') {
+            Write-Host 'ENV06_FINAL=FAIL'
+            exit 1
+          }
           Write-Host 'ENV06_FINAL=PARTIALLY_VERIFIED'
           Write-Host 'ENV06_REASON=Software receipt generation and Windows spooler-facing invocation are verified; physical thermal paper output is NOT YET VERIFIED.'
