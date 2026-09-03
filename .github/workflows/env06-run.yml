@@ -1,0 +1,73 @@
+name: ENV-06 Thermal Receipt Push Runtime
+
+on:
+  push:
+    branches: [test/env06-thermal-receipt-runtime]
+
+jobs:
+  env06-runtime:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Focused automated checks
+        shell: pwsh
+        run: |
+          node --check server.js
+          $pkg = Get-Content package.json | ConvertFrom-Json
+          if ($pkg.scripts.start -ne 'node server.js') { throw 'Unexpected start script' }
+          $source = Get-Content server.js -Raw
+          foreach ($required in @('charsPerLine: 32','paperWidth: 58','app.post("/print"','SUMATRA_PRINT_SETTINGS')) {
+            if (-not $source.Contains($required)) { throw "Missing contract: $required" }
+          }
+          Write-Host 'ENV06_FOCUSED_CHECK_PASS=true'
+      - name: Real service virtual thermal print
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:PORT='43106'
+          $env:CORS_ORIGIN='http://127.0.0.1:3000'
+          $spooler=Get-Service Spooler -ErrorAction SilentlyContinue
+          if ($spooler) { Write-Host "ENV06_WINDOWS_SPOOLER_STATUS=$($spooler.Status)" }
+          $names=@(); try { $names=@(Get-Printer | Select-Object -ExpandProperty Name) } catch {}
+          $env:PRINTER_NAME=if($names.Count -gt 0){[string]$names[0]}else{'ENV06_VIRTUAL_POS58'}
+          Write-Host "ENV06_SELECTED_PRINTER=$env:PRINTER_NAME"
+          Write-Host "ENV06_ENUMERATED_PRINTER_COUNT=$($names.Count)"
+          $fake=Join-Path $env:RUNNER_TEMP 'env06-fake-sumatra.cmd'
+          $env:FAKE_SUMATRA_LOG=Join-Path $env:RUNNER_TEMP 'env06-sumatra-args.txt'
+          Set-Content $fake @('@echo off','> "%FAKE_SUMATRA_LOG%" echo %*','exit /b 0') -Encoding ASCII
+          $env:SUMATRA_PATH=$fake
+          $env:SUMATRA_PRINT_SETTINGS='noscale'
+          $out=Join-Path $env:RUNNER_TEMP 'env06.out.log'; $err=Join-Path $env:RUNNER_TEMP 'env06.err.log'
+          $p=Start-Process node -ArgumentList 'server.js' -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          try {
+            $status=$null
+            for($i=0;$i -lt 30;$i++){Start-Sleep 1;try{$status=Invoke-RestMethod http://127.0.0.1:43106/status -TimeoutSec 2;break}catch{}}
+            if($null -eq $status){throw 'Service not ready'}
+            if($status.connected -ne $true -or $status.mode -ne 'windows-spooler'){throw 'Bad status'}
+            $payload=@{shopName='SHAJ ENV06 Store';billNo='ENV06-001';date='2026-09-03';time='14:15';payment='cash';items=@(@{name='Long Runtime Product Name';qty=2;rate=15.5},@{name='Milk';qty=1;rate=20});subtotal=51;gst=2.55;discount=1;total=52.55;printConfig=@{paperWidth=58;fontStyle='A';fontScale=1}}|ConvertTo-Json -Depth 6
+            $r=Invoke-RestMethod http://127.0.0.1:43106/print -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 15
+            if($r.success -ne $true){throw 'Print not successful'}
+            Write-Host 'ENV06_VIRTUAL_PRINT_HTTP=200'; Write-Host 'ENV06_VIRTUAL_PRINT_SUCCESS=true'
+            if(-not(Test-Path temp.txt)){throw 'Missing temp.txt'}
+            $receipt=Get-Content temp.txt -Raw
+            foreach($t in @('SHAJ ENV06 Store','ENV06-001','Long Runtime','Milk','TOTAL: 52.55','Thank you! Visit again')){if($receipt -notmatch [regex]::Escape($t)){throw "Receipt missing $t"}}
+            $wide=@(Get-Content temp.txt|Where-Object{$_.Length -gt 32})
+            if($wide.Count -eq 0){Write-Host 'ENV06_RECEIPT_58MM_WIDTH_PASS=true'}else{Write-Host "ENV06_RECEIPT_WIDTH_WARNING_COUNT=$($wide.Count)"}
+            Write-Host 'ENV06_RECEIPT_OUTPUT_PASS=true'
+            if(-not(Test-Path $env:FAKE_SUMATRA_LOG)){throw 'No Sumatra invocation log'}
+            $args=Get-Content $env:FAKE_SUMATRA_LOG -Raw
+            if($args -notmatch '-print-to' -or $args -notmatch '-print-settings' -or $args -notmatch 'noscale' -or $args -notmatch 'temp.txt'){throw "Unexpected args $args"}
+            Write-Host "ENV06_SUMATRA_ARGS=$args"; Write-Host 'ENV06_SPOOL_COMMAND_PASS=true'
+            $printers=Invoke-RestMethod http://127.0.0.1:43106/printers -TimeoutSec 10
+            Write-Host "ENV06_PRINTER_ENDPOINT_COUNT=$($printers.printers.Count)"
+            if($p.HasExited){throw 'Service exited'}
+            Write-Host 'ENV06_PROCESS_ALIVE=true'; Write-Host 'ENV06_VIRTUAL_THERMAL_RUNTIME_PASS=true'; Write-Host 'ENV06_PHYSICAL_POS58_RECEIPT_ACCEPTANCE=NOT_YET_VERIFIED'
+            Get-Content $out -ErrorAction SilentlyContinue; Get-Content $err -ErrorAction SilentlyContinue
+          } finally { if($p -and -not $p.HasExited){Stop-Process $p.Id -Force} }
