@@ -59,11 +59,8 @@ jobs:
 
           $fakeSumatra = Join-Path $env:RUNNER_TEMP 'env06-fake-sumatra.cmd'
           $env:FAKE_SUMATRA_LOG = Join-Path $env:RUNNER_TEMP 'env06-sumatra-args.txt'
-          @'
-@echo off
-> "%FAKE_SUMATRA_LOG%" echo %*
-exit /b 0
-'@ | Set-Content -Path $fakeSumatra -Encoding ASCII
+          $fakeLines = @('@echo off', '> "%FAKE_SUMATRA_LOG%" echo %*', 'exit /b 0')
+          Set-Content -Path $fakeSumatra -Value $fakeLines -Encoding ASCII
           $env:SUMATRA_PATH = $fakeSumatra
           $env:SUMATRA_PRINT_SETTINGS = 'noscale'
 
