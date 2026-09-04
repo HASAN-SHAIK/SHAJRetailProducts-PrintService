@@ -1,0 +1,110 @@
+name: V1 PrintService Request Body Limit Runtime
+
+on:
+  pull_request:
+    paths:
+      - 'server.js'
+      - 'tests/request-body-limit.acceptance.mjs'
+      - '.github/workflows/v1-request-body-limit-runtime.yml'
+  workflow_dispatch:
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "REQUEST_BODY_LIMIT_HEAD=$(git rev-parse HEAD)"
+          echo "REQUEST_BODY_LIMIT_BASE=$(git merge-base HEAD origin/main)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Locked install
+        run: npm ci --no-audit --no-fund
+
+      - name: Smallest focused automated checks
+        run: |
+          node --check server.js
+          node tests/request-body-limit.acceptance.mjs
+
+      - name: Real PrintService runtime verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT=43131
+          LOG="$RUNNER_TEMP/printservice-body-limit.log"
+          UNDER="$RUNNER_TEMP/under-limit.json"
+          OVER="$RUNNER_TEMP/over-limit.json"
+
+          python3 - <<'PY'
+          import json, os
+          under = os.environ['UNDER']
+          over = os.environ['OVER']
+          with open(under, 'w', encoding='utf-8') as f:
+              json.dump({'shopName':'Runtime Limit Probe','items':[],'padding':'x'*1000}, f)
+          with open(over, 'w', encoding='utf-8') as f:
+              json.dump({'shopName':'Runtime Limit Probe','items':[],'padding':'x'*(1024*1024+4096)}, f)
+          PY
+        env:
+          UNDER: ${{ runner.temp }}/under-limit.json
+          OVER: ${{ runner.temp }}/over-limit.json
+
+      - name: Exercise real listener and record evidence
+        shell: bash
+        env:
+          PORT: '43131'
+          CORS_ORIGIN: 'https://pos.shajtech.in'
+          SUMATRA_PATH: '/definitely/missing/SumatraPDF.exe'
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/printservice-body-limit.log"
+          UNDER="$RUNNER_TEMP/under-limit.json"
+          OVER="$RUNNER_TEMP/over-limit.json"
+
+          node server.js >"$LOG" 2>&1 &
+          PID=$!
+          cleanup() { kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 40); do
+            if curl -fsS "http://127.0.0.1:${PORT}/status" >/dev/null; then break; fi
+            sleep 0.25
+          done
+          curl -fsS "http://127.0.0.1:${PORT}/status" >/tmp/status-before.json
+
+          UNDER_STATUS=$(curl -sS -o /tmp/under-body.txt -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            --data-binary "@$UNDER" \
+            "http://127.0.0.1:${PORT}/print")
+          test "$UNDER_STATUS" = "500"
+          grep -F 'SumatraPDF not found' /tmp/under-body.txt
+
+          OVER_STATUS=$(curl -sS -o /tmp/over-body.txt -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            --data-binary "@$OVER" \
+            "http://127.0.0.1:${PORT}/print")
+          test "$OVER_STATUS" = "413"
+
+          kill -0 "$PID"
+          AFTER_STATUS=$(curl -sS -o /tmp/status-after.json -w '%{http_code}' \
+            "http://127.0.0.1:${PORT}/status")
+          test "$AFTER_STATUS" = "200"
+          grep -F '"connected":true' /tmp/status-after.json
+
+          echo "PRINTSERVICE_UNDER_LIMIT_STATUS=$UNDER_STATUS"
+          echo "PRINTSERVICE_OVER_LIMIT_STATUS=$OVER_STATUS"
+          echo "PRINTSERVICE_PROCESS_ALIVE_AFTER_413=true"
+          echo "PRINTSERVICE_STATUS_AFTER_413=$AFTER_STATUS"
+          echo "PRINTSERVICE_BODY_LIMIT_RUNTIME_PASS=true"
+          echo '--- service log ---'
+          cat "$LOG"
