@@ -1,0 +1,112 @@
+name: V1 PrintService CORS Runtime
+
+on:
+  pull_request:
+    paths:
+      - 'server.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/v1-printservice-cors-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cors-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Focused automated checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check server.js
+          node - <<'NODE'
+          const pkg = require('./package.json');
+          if (pkg.scripts?.start !== 'node server.js') {
+            throw new Error(`unexpected start script: ${pkg.scripts?.start}`);
+          }
+          console.log('CORS_FOCUSED_AUTOMATED_PASS=true');
+          NODE
+
+      - name: Start real service and verify CORS boundary
+        shell: bash
+        env:
+          PORT: '43117'
+          CORS_ORIGIN: 'https://pos.shajtech.in,http://localhost:3000'
+        run: |
+          set -euo pipefail
+          EVIDENCE="$RUNNER_TEMP/cors-runtime-evidence.txt"
+          node server.js > "$RUNNER_TEMP/printservice.log" 2>&1 &
+          PID=$!
+          cleanup() {
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for i in $(seq 1 40); do
+            if curl -fsS "http://127.0.0.1:${PORT}/status" > "$RUNNER_TEMP/status.json"; then
+              break
+            fi
+            sleep 0.25
+          done
+
+          kill -0 "$PID"
+          grep -q '"connected":true' "$RUNNER_TEMP/status.json"
+
+          TRUSTED_HEADERS="$RUNNER_TEMP/trusted.headers"
+          TRUSTED_BODY="$RUNNER_TEMP/trusted.json"
+          curl -sS -D "$TRUSTED_HEADERS" -o "$TRUSTED_BODY" \
+            -H 'Origin: https://pos.shajtech.in' \
+            "http://127.0.0.1:${PORT}/status"
+          grep -qi '^access-control-allow-origin: https://pos.shajtech.in' "$TRUSTED_HEADERS"
+          grep -q '"connected":true' "$TRUSTED_BODY"
+
+          UNTRUSTED_HEADERS="$RUNNER_TEMP/untrusted.headers"
+          UNTRUSTED_BODY="$RUNNER_TEMP/untrusted.body"
+          UNTRUSTED_CODE=$(curl -sS -D "$UNTRUSTED_HEADERS" -o "$UNTRUSTED_BODY" -w '%{http_code}' \
+            -H 'Origin: https://evil.example' \
+            "http://127.0.0.1:${PORT}/status")
+          test "$UNTRUSTED_CODE" = '500'
+          if grep -qi '^access-control-allow-origin:' "$UNTRUSTED_HEADERS"; then
+            echo 'unexpected ACAO header for untrusted origin' >&2
+            exit 1
+          fi
+          grep -q 'Not allowed by CORS' "$UNTRUSTED_BODY"
+
+          curl -fsS "http://127.0.0.1:${PORT}/status" > "$RUNNER_TEMP/recovery.json"
+          grep -q '"connected":true' "$RUNNER_TEMP/recovery.json"
+          kill -0 "$PID"
+
+          {
+            echo "PRINTSERVICE_CORS_TRUSTED_STATUS=200"
+            echo "PRINTSERVICE_CORS_TRUSTED_ACAO=https://pos.shajtech.in"
+            echo "PRINTSERVICE_CORS_UNTRUSTED_STATUS=$UNTRUSTED_CODE"
+            echo "PRINTSERVICE_CORS_UNTRUSTED_ACAO=absent"
+            echo "PRINTSERVICE_CORS_PROCESS_ALIVE_AFTER_REJECTION=true"
+            echo "PRINTSERVICE_CORS_RUNTIME_PASS=true"
+            echo '--- service log ---'
+            cat "$RUNNER_TEMP/printservice.log"
+          } | tee "$EVIDENCE"
+
+      - name: Upload runtime evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: printservice-cors-runtime-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/cors-runtime-evidence.txt
+          retention-days: 7
+          if-no-files-found: error
