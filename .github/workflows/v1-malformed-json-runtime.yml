@@ -1,0 +1,34 @@
+name: V1 PrintService Malformed JSON Runtime
+
+on:
+  pull_request:
+    paths:
+      - 'server.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tests/malformed-json-runtime.mjs'
+      - '.github/workflows/v1-malformed-json-runtime.yml'
+  workflow_dispatch:
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact head
+        if: github.event_name == 'pull_request'
+        run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Locked install
+        run: npm ci --no-audit --no-fund
+      - name: Production syntax
+        run: node --check server.js
+      - name: Focused acceptance syntax
+        run: node --check tests/malformed-json-runtime.mjs
+      - name: Real PrintService malformed JSON runtime
+        run: node tests/malformed-json-runtime.mjs
