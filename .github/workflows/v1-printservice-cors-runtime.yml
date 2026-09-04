@@ -49,6 +49,7 @@ jobs:
           CORS_ORIGIN: 'https://pos.shajtech.in,http://localhost:3000'
         run: |
           set -euo pipefail
+          EVIDENCE="$RUNNER_TEMP/cors-runtime-evidence.txt"
           node server.js > "$RUNNER_TEMP/printservice.log" 2>&1 &
           PID=$!
           cleanup() {
@@ -91,10 +92,21 @@ jobs:
           grep -q '"connected":true' "$RUNNER_TEMP/recovery.json"
           kill -0 "$PID"
 
-          echo "PRINTSERVICE_CORS_TRUSTED_STATUS=200"
-          echo "PRINTSERVICE_CORS_TRUSTED_ACAO=https://pos.shajtech.in"
-          echo "PRINTSERVICE_CORS_UNTRUSTED_STATUS=$UNTRUSTED_CODE"
-          echo "PRINTSERVICE_CORS_UNTRUSTED_ACAO=absent"
-          echo "PRINTSERVICE_CORS_PROCESS_ALIVE_AFTER_REJECTION=true"
-          echo "PRINTSERVICE_CORS_RUNTIME_PASS=true"
-          cat "$RUNNER_TEMP/printservice.log"
+          {
+            echo "PRINTSERVICE_CORS_TRUSTED_STATUS=200"
+            echo "PRINTSERVICE_CORS_TRUSTED_ACAO=https://pos.shajtech.in"
+            echo "PRINTSERVICE_CORS_UNTRUSTED_STATUS=$UNTRUSTED_CODE"
+            echo "PRINTSERVICE_CORS_UNTRUSTED_ACAO=absent"
+            echo "PRINTSERVICE_CORS_PROCESS_ALIVE_AFTER_REJECTION=true"
+            echo "PRINTSERVICE_CORS_RUNTIME_PASS=true"
+            echo '--- service log ---'
+            cat "$RUNNER_TEMP/printservice.log"
+          } | tee "$EVIDENCE"
+
+      - name: Upload runtime evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: printservice-cors-runtime-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/cors-runtime-evidence.txt
+          retention-days: 7
+          if-no-files-found: error
