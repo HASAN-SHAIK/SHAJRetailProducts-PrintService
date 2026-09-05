@@ -1,0 +1,48 @@
+name: V1 Printer Discovery Timeout Runtime
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Assert exact head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          echo "EXACT_HEAD=$(git rev-parse HEAD)"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Locked install
+        run: npm ci --no-audit --no-fund
+
+      - name: Production and focused syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check server.js
+          node --check tests/printer-discovery-timeout-runtime.mjs
+          bash -n tests/fake-powershell-discovery-hang.sh
+          chmod +x tests/fake-powershell-discovery-hang.sh
+
+      - name: Real PrintService printer-discovery runtime
+        run: node tests/printer-discovery-timeout-runtime.mjs
