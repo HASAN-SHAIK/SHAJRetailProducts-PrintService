@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import http from "node:http";
 import process from "node:process";
 
@@ -16,6 +17,9 @@ const server = spawn(process.execPath, ["server.js"], {
 
 let stdout = "";
 let stderr = "";
+let queryStatus = null;
+let queryConnected = false;
+let processAliveAfterQuery = false;
 server.stdout.on("data", (chunk) => {
   stdout += chunk.toString();
 });
@@ -76,10 +80,13 @@ try {
   const sensitivePath = `/status?sync_token=${marker}&receipt_id=INV-SECRET-42`;
   const response = await request(sensitivePath);
   const body = JSON.parse(response.body);
+  queryStatus = response.status;
+  queryConnected = body.connected === true;
+  processAliveAfterQuery = server.exitCode === null;
 
-  console.log(`PRINTSERVICE_QUERY_STATUS=${response.status}`);
-  console.log(`PRINTSERVICE_QUERY_CONNECTED=${body.connected === true}`);
-  console.log(`PRINTSERVICE_PROCESS_ALIVE_AFTER_QUERY=${server.exitCode === null}`);
+  console.log(`PRINTSERVICE_QUERY_STATUS=${queryStatus}`);
+  console.log(`PRINTSERVICE_QUERY_CONNECTED=${queryConnected}`);
+  console.log(`PRINTSERVICE_PROCESS_ALIVE_AFTER_QUERY=${processAliveAfterQuery}`);
 
   if (response.status !== 200 || body.connected !== true) {
     throw new Error("real /status request did not complete successfully");
@@ -95,15 +102,25 @@ try {
 const combinedLogs = `${stdout}\n${stderr}`;
 const secretLeaked = combinedLogs.includes(marker);
 const receiptLeaked = combinedLogs.includes("INV-SECRET-42");
+const redactionPass = !secretLeaked && !receiptLeaked;
+
+const evidence = {
+  queryStatus,
+  queryConnected,
+  processAliveAfterQuery,
+  queryMarkerLogged: secretLeaked,
+  receiptIdLogged: receiptLeaked,
+  queryLogRedactionPass: redactionPass,
+  runtimeFailure: failure ? failure.message : null,
+};
+writeFileSync("runtime-evidence.json", `${JSON.stringify(evidence, null, 2)}\n`);
 
 console.log(`PRINTSERVICE_QUERY_MARKER_LOGGED=${secretLeaked}`);
 console.log(`PRINTSERVICE_RECEIPT_ID_LOGGED=${receiptLeaked}`);
-console.log(
-  `PRINTSERVICE_QUERY_LOG_REDACTION_PASS=${!secretLeaked && !receiptLeaked}`,
-);
+console.log(`PRINTSERVICE_QUERY_LOG_REDACTION_PASS=${redactionPass}`);
 
 if (failure) throw failure;
-if (secretLeaked || receiptLeaked) {
+if (!redactionPass) {
   throw new Error(
     "request query parameters were written verbatim to PrintService logs",
   );
