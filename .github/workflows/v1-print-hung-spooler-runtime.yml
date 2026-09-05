@@ -1,0 +1,61 @@
+name: V1 PrintService Hung Spooler Runtime
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Assert exact head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          echo "EXACT_HEAD=$(git rev-parse HEAD)"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Locked install
+        run: npm ci --no-audit --no-fund
+
+      - name: Smallest relevant automated checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check server.js
+          node --check tests/hung-spooler-runtime.mjs
+          bash -n tests/fake-powershell-printer.sh
+          bash -n tests/fake-sumatra-hang.sh
+
+      - name: Prepare isolated virtual printer commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/shaj-print-bin"
+          cp tests/fake-powershell-printer.sh "$RUNNER_TEMP/shaj-print-bin/powershell"
+          chmod +x "$RUNNER_TEMP/shaj-print-bin/powershell"
+          chmod +x tests/fake-sumatra-hang.sh
+          echo "$RUNNER_TEMP/shaj-print-bin" >> "$GITHUB_PATH"
+
+      - name: Real PrintService hung-spooler runtime
+        env:
+          TEST_PORT: 43134
+          PRINT_RESPONSE_DEADLINE_MS: 2500
+        run: node tests/hung-spooler-runtime.mjs
