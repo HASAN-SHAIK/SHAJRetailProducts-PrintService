@@ -1,0 +1,68 @@
+name: V1 PrintService Log Query Redaction Runtime
+
+on:
+  pull_request:
+    paths:
+      - "server.js"
+      - "package.json"
+      - "package-lock.json"
+      - "tests/log-query-redaction-runtime.mjs"
+      - ".github/workflows/v1-print-log-query-redaction.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Assert exact head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          echo "PRINTSERVICE_EXACT_HEAD=$(git rev-parse HEAD)"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Locked install
+        run: npm ci --no-audit --no-fund
+
+      - name: Smallest relevant automated checks
+        run: |
+          node --check server.js
+          node --check tests/log-query-redaction-runtime.mjs
+
+      - name: Real PrintService listener and log-redaction runtime
+        id: runtime
+        continue-on-error: true
+        run: node tests/log-query-redaction-runtime.mjs
+
+      - name: Display runtime evidence
+        if: always()
+        run: cat runtime-evidence.json
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: printservice-log-query-redaction-evidence
+          path: runtime-evidence.json
+          retention-days: 1
+
+      - name: Fail closed on runtime verdict
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.runtime.outcome }}" = "success"
