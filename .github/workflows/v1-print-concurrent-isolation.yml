@@ -65,5 +65,5 @@ jobs:
 
       - name: Fail closed on runtime verdict
         if: always()
-        shell: bash
-        run: test "${{ steps.runtime.outcome }}" = "success"
+        run: |
+          node -e 'const e=require("./runtime-evidence.json"); if (e.runtimeFailure || e.isolated !== true) { console.error(e); process.exit(1); }'
