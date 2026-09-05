@@ -1,0 +1,51 @@
+name: Cycle D Receipt Temp Cleanup Runtime
+
+on:
+  pull_request:
+    paths:
+      - 'tests/receipt-temp-cleanup-runtime.mjs'
+      - '.github/workflows/cycle-d-receipt-temp-cleanup-runtime.yml'
+      - 'server.js'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Assert exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "EXACT_HEAD_ACTUAL=$actual"
+          echo "EXACT_HEAD_EXPECTED=$expected"
+          test "$actual" = "$expected"
+
+      - name: Locked install
+        run: npm ci --no-audit --no-fund
+
+      - name: Smallest relevant automated checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check server.js
+          node --check tests/receipt-temp-cleanup-runtime.mjs
+          npm start -- --help >/dev/null 2>&1 &
+          smoke_pid=$!
+          sleep 1
+          kill "$smoke_pid" 2>/dev/null || true
+          wait "$smoke_pid" 2>/dev/null || true
+
+      - name: Real PrintService receipt cleanup runtime
+        run: node tests/receipt-temp-cleanup-runtime.mjs
