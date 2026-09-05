@@ -45,4 +45,24 @@ jobs:
           node --check tests/log-query-redaction-runtime.mjs
 
       - name: Real PrintService listener and log-redaction runtime
+        id: runtime
+        continue-on-error: true
         run: node tests/log-query-redaction-runtime.mjs
+
+      - name: Display runtime evidence
+        if: always()
+        run: cat runtime-evidence.json
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: printservice-log-query-redaction-evidence
+          path: runtime-evidence.json
+          retention-days: 1
+
+      - name: Fail closed on runtime verdict
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.runtime.outcome }}" = "success"
