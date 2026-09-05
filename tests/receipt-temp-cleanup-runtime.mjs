@@ -8,7 +8,8 @@ const repo = process.cwd();
 const port = 43137;
 const marker = 'CYCLE-D-SENSITIVE-BILL-84721';
 const tempReceipt = path.join(repo, 'temp.txt');
-const work = await mkdir(path.join(os.tmpdir(), `printservice-cleanup-${process.pid}`), { recursive: true }).then(() => path.join(os.tmpdir(), `printservice-cleanup-${process.pid}`));
+const work = path.join(os.tmpdir(), `printservice-cleanup-${process.pid}`);
+await mkdir(work, { recursive: true });
 const bin = path.join(work, 'bin');
 const spool = path.join(work, 'spooled.txt');
 await mkdir(bin, { recursive: true });
@@ -17,7 +18,7 @@ await rm(tempReceipt, { force: true });
 const powershell = path.join(bin, 'powershell');
 const sumatra = path.join(bin, 'fake-sumatra.sh');
 await writeFile(powershell, '#!/usr/bin/env bash\nprintf "%s\\n" "POSPrinter POS58"\n', 'utf8');
-await writeFile(sumatra, `#!/usr/bin/env bash\nset -euo pipefail\nlast="\\${!#}"\ncp "$last" "${spool}"\n`, 'utf8');
+await writeFile(sumatra, '#!/usr/bin/env bash\nset -euo pipefail\nlast="${!#}"\ncp "$last" "' + spool + '"\n', 'utf8');
 await chmod(powershell, 0o755);
 await chmod(sumatra, 0o755);
 
@@ -32,9 +33,8 @@ const child = spawn(process.execPath, ['server.js'], {
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
-let logs = '';
-child.stdout.on('data', d => { logs += d.toString(); process.stdout.write(d); });
-child.stderr.on('data', d => { logs += d.toString(); process.stderr.write(d); });
+child.stdout.on('data', d => process.stdout.write(d));
+child.stderr.on('data', d => process.stderr.write(d));
 
 async function waitForStatus() {
   for (let i = 0; i < 80; i++) {
