@@ -1,0 +1,69 @@
+name: V1 PrintService Concurrent Print Isolation Runtime
+
+on:
+  pull_request:
+    paths:
+      - "server.js"
+      - "package.json"
+      - "package-lock.json"
+      - "tests/fake-sumatra-concurrency.sh"
+      - "tests/concurrent-print-isolation-runtime.mjs"
+      - ".github/workflows/v1-print-concurrent-isolation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Assert exact head
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          echo "PRINTSERVICE_EXACT_HEAD=$(git rev-parse HEAD)"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Locked install
+        run: npm ci --no-audit --no-fund
+
+      - name: Smallest relevant automated checks
+        run: |
+          node --check server.js
+          node --check tests/concurrent-print-isolation-runtime.mjs
+          bash -n tests/fake-sumatra-concurrency.sh
+
+      - name: Real PrintService concurrent runtime
+        id: runtime
+        continue-on-error: true
+        run: node tests/concurrent-print-isolation-runtime.mjs
+
+      - name: Display runtime evidence
+        if: always()
+        run: cat runtime-evidence.json
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: printservice-concurrent-isolation-evidence
+          path: runtime-evidence.json
+          retention-days: 1
+
+      - name: Fail closed on runtime verdict
+        if: always()
+        shell: bash
+        run: test "${{ steps.runtime.outcome }}" = "success"
