@@ -2,7 +2,9 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-const { exec } = require("child_process");
+const childProcess = require("child_process");
+// Late-bound so tests can stub child_process.exec (never touch a real printer).
+const exec = (...args) => childProcess.exec(...args);
 const fs = require("fs");
 const path = require("path");
 
@@ -247,7 +249,8 @@ app.post("/print", async (req, res) => {
 
     /* ===== WRITE FILE ===== */
 
-    const filePath = path.join(__dirname, "temp.txt");
+    const filePath =
+      process.env.RECEIPT_TEMP_PATH || path.join(__dirname, "temp.txt");
     fs.writeFileSync(filePath, receipt, "utf8");
 
     /* ===== PRINT ===== */
@@ -288,7 +291,19 @@ app.post("/print", async (req, res) => {
 });
 /* ================= START ================= */
 
-app.listen(PORT, () => {
-  console.log(`🚀 Local print service running on http://localhost:${PORT}`);
-  console.log(`🖨️ Printer: ${PRINTER_NAME}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Local print service running on http://localhost:${PORT}`);
+    console.log(`🖨️ Printer: ${PRINTER_NAME}`);
+  });
+}
+
+module.exports = {
+  app,
+  buildReceipt,
+  normalizePrintConfig,
+  wrapText,
+  center,
+  formatAmount,
+  PAPER_CONFIG,
+};
