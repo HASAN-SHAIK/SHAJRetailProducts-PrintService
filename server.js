@@ -51,11 +51,11 @@ const ESC = "\x1B";
 const PAPER_CONFIG = {
   58: {
     charsPerLine: 32,
-    columns: { name: 16, qty: 5, rate: 5, amt: 6 },
+    columns: { name: 14, qty: 4, rate: 7, amt: 7 },
   },
   80: {
     charsPerLine: 48,
-    columns: { name: 26, qty: 6, rate: 6, amt: 10 },
+    columns: { name: 24, qty: 6, rate: 8, amt: 10 },
   },
 };
 
@@ -149,6 +149,12 @@ const formatAmount = (v) => {
   return Number.isInteger(n) ? String(n) : n.toFixed(2);
 };
 
+// Quantities are often weights (1.5 kg): show up to 3 decimals, no trailing zeros.
+const formatQty = (v) => {
+  const n = Number(v || 0);
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(3)));
+};
+
 /* ================= RECEIPT ================= */
 
 const buildReceipt = (data, printConfig) => {
@@ -183,9 +189,26 @@ const buildReceipt = (data, printConfig) => {
 
   items.forEach((item) => {
     const nameLines = wrapText(item.name, nameWidth);
-    const qty = formatAmount(item.qty);
+    const qty = formatQty(item.qty);
     const rate = formatAmount(item.rate);
     const amt = formatAmount(item.qty * item.rate);
+
+    // Every numeric column needs a one-space gutter. If any value is too wide
+    // for its column, print the name on its own line(s) and the numbers on a
+    // right-aligned line below instead of letting columns run together.
+    if (
+      qty.length > qtyWidth - 1 ||
+      rate.length > rateWidth - 1 ||
+      amt.length > amtWidth - 1
+    ) {
+      wrapText(item.name, paper.charsPerLine).forEach((ln) => out.push(ln));
+      out.push(
+        padLeft(`${qty} x ${rate} = ${amt}`, paper.charsPerLine).slice(
+          -paper.charsPerLine,
+        ),
+      );
+      return;
+    }
 
     nameLines.forEach((ln, i) => {
       if (i === 0) {

@@ -117,12 +117,52 @@ test("receipt: item row columns align and compute amount", () => {
   try {
     const { text } = s.buildReceipt(sample, { paperWidth: 58 });
     const row = text.split("\n").find((l) => l.startsWith("Rice"));
-    // name 16 | qty 5 | rate 5 | amt 6
-    assert.equal(row, "Rice" + " ".repeat(12) + "    2   50   100");
+    // name 14 | qty 4 | rate 7 | amt 7 (every number column keeps a leading gutter)
+    assert.equal(row, "Rice" + " ".repeat(10) + "   2     50    100");
   } finally {
     s.restore();
   }
 });
+
+for (const width of [58, 80]) {
+  test(`receipt at ${width}mm: decimal qty/rate/amount never run together`, () => {
+    const s = loadServer();
+    try {
+      const data = {
+        shopName: "T",
+        billNo: "1",
+        items: [
+          { name: "Sugar 1kg", qty: 3, rate: 48.5 }, // 48.50 -> 145.50
+          { name: "Dal", qty: 12.5, rate: 1234.56 },
+        ],
+        total: 0,
+      };
+      const { text } = s.buildReceipt(data, { paperWidth: width });
+      const max = s.PAPER_CONFIG[width].charsPerLine;
+      const lines = text.split("\n");
+      for (const l of lines) assert.ok(l.length <= max, `line too wide (${l.length}): ${l}`);
+      // A row's numbers are either three separate columns, or (when they do not
+      // fit with a gutter) a right-aligned "qty x rate = amount" line below the name.
+      const numeric = lines.filter(
+        (l) => /^\S.*\s\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?$/.test(l) || / x .+ = /.test(l),
+      );
+      assert.equal(numeric.length, 2, `expected both items to show qty/rate/amount: ${lines.join("|")}`);
+      for (const l of numeric) {
+        // qty, rate and amount must be separate numbers: more than two decimals
+        // means two columns ran together (e.g. 348.50145.50).
+        assert.ok(!/\d\.\d{3,}/.test(l.replace(/^\S.*?(\d+\.\d{3}) x/, "x")), `merged numbers: ${l}`);
+      }
+      assert.ok(lines.some((l) => /^Sugar 1kg\s+3\s+48\.50\s+145\.50$/.test(l)), "Sugar row columns");
+      if (width === 58) {
+        assert.ok(lines.some((l) => /12\.5 x 1234\.56 = 15432$/.test(l)), "Dal falls back to a numbers line");
+      } else {
+        assert.ok(lines.some((l) => /^Dal\s+12\.5\s+1234\.56\s+15432$/.test(l)), "Dal fits normal columns at 80mm");
+      }
+    } finally {
+      s.restore();
+    }
+  });
+}
 
 test("receipt: defaults for missing fields", () => {
   const s = loadServer();
