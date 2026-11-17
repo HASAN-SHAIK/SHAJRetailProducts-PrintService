@@ -149,6 +149,9 @@ const formatAmount = (v) => {
   return Number.isInteger(n) ? String(n) : n.toFixed(2);
 };
 
+// Optional receipt fields count as sent only when not null/undefined/blank.
+const hasValue = (v) => v !== undefined && v !== null && String(v).trim() !== "";
+
 // Quantities are often weights (1.5 kg): show up to 3 decimals, no trailing zeros.
 const formatQty = (v) => {
   const n = Number(v || 0);
@@ -173,7 +176,21 @@ const buildReceipt = (data, printConfig) => {
     out.push(setFont(cfg.fontStyle) + setFontSize(cfg.fontScale));
   }
 
-  out.push(maybeCenter(data.shopName || "My Store", paper.charsPerLine));
+  // A shop name wider than the paper is wrapped over several centred lines;
+  // one that fits is printed exactly as sent.
+  const shopName = String(data.shopName || "My Store");
+  (shopName.length > paper.charsPerLine
+    ? wrapText(shopName.trim(), paper.charsPerLine)
+    : [shopName]
+  ).forEach((ln) =>
+    out.push(maybeCenter(ln, paper.charsPerLine)),
+  );
+  const gstin = hasValue(data.gstin) ? String(data.gstin).trim() : "";
+  if (gstin) {
+    wrapText(`GSTIN: ${gstin}`, paper.charsPerLine).forEach((ln) =>
+      out.push(maybeCenter(ln, paper.charsPerLine)),
+    );
+  }
   out.push(maybeCenter(line(paper.charsPerLine), paper.charsPerLine));
 
   out.push(`Bill No: ${data.billNo || "-"}`);
@@ -223,7 +240,22 @@ const buildReceipt = (data, printConfig) => {
 
   out.push(line(paper.charsPerLine));
   out.push(`Subtotal: ${formatAmount(data.subtotal)}`);
-  out.push(`GST: ${formatAmount(data.gst)}`);
+  // A GST split (CGST/SGST for intra-state, IGST for inter-state) replaces the
+  // single GST line; payloads without a split keep the original GST line.
+  const taxSplit = [
+    ["CGST", data.cgst],
+    ["SGST", data.sgst],
+    ["IGST", data.igst],
+  ].filter(([, v]) => hasValue(v));
+  if (taxSplit.length) {
+    taxSplit.forEach(([label, v]) =>
+      wrapText(`${label}: ${formatAmount(v)}`, paper.charsPerLine).forEach(
+        (ln) => out.push(ln),
+      ),
+    );
+  } else {
+    out.push(`GST: ${formatAmount(data.gst)}`);
+  }
   out.push(`Discount: ${formatAmount(data.discount)}`);
   out.push(line(paper.charsPerLine));
   out.push(

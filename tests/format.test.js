@@ -233,39 +233,142 @@ test("receipt: USE_ESC_POS=1 emits font + size init, otherwise none", () => {
   }
 });
 
-// ---- Known gaps vs V1 Gate 4 (reported as TODO, not as passing) ----
-test(
-  "V1 Gate 4: GSTIN / CGST / SGST lines",
-  { todo: "receipt builder has no gstin/cgst/sgst fields; only one GST line" },
-  () => {
-    const s = loadServer();
-    try {
-      const { text } = s.buildReceipt(
-        { shopName: "S", gstin: "33ABCDE1234F1Z5", cgst: 2.5, sgst: 2.5 },
-        {},
-      );
-      assert.match(text, /GSTIN/);
-      assert.match(text, /CGST/);
-      assert.match(text, /SGST/);
-    } finally {
-      s.restore();
-    }
-  },
-);
+// ---- V1 Gate 4: GSTIN / CGST / SGST / IGST and long shop names ----
 
-test(
-  "V1 Gate 4: shop name longer than paper width is wrapped, not clipped",
-  { todo: "header is not wrapped; long shop name is emitted as one over-wide line" },
-  () => {
+// Output captured from main (owner-approved 58mm layout) before the GST fields
+// existed: payloads without the new fields must print byte-for-byte the same.
+const GOLDEN = {
+  58: "          SHAJ Retail\n--------------------------------\nBill No: INV-2024-0001\nDate: 2024-05-01\nTime: 10:30\nPayment: UPI\n--------------------------------\nITEM           QTY   RATE    AMT\n--------------------------------\nRice             2     50    100\nExtra Long     1.5  10.25  15.38\nProduct Name  \nThat Must Wrap\n--------------------------------\nSubtotal: 115.38\nGST: 5.77\nDiscount: 0\n--------------------------------\n         TOTAL: 121.15\n     Thank you! Visit again\n\n",
+  80: "                  SHAJ Retail\n------------------------------------------------\nBill No: INV-2024-0001\nDate: 2024-05-01\nTime: 10:30\nPayment: UPI\n------------------------------------------------\nITEM                       QTY    RATE       AMT\n------------------------------------------------\nRice                         2      50       100\nExtra Long Product Name    1.5   10.25     15.38\nThat Must Wrap          \n------------------------------------------------\nSubtotal: 115.38\nGST: 5.77\nDiscount: 0\n------------------------------------------------\n                 TOTAL: 121.15\n             Thank you! Visit again\n\n",
+};
+
+const gstSample = {
+  ...sample,
+  gstin: "33ABCDE1234F1Z5",
+  cgst: 2.89,
+  sgst: 2.88,
+};
+
+const assertWithin = (text, max) => {
+  for (const l of text.split("\n")) {
+    assert.ok(l.length <= max, `line too long (${l.length} > ${max}): "${l}"`);
+  }
+};
+
+for (const [width, chars] of [
+  [58, 32],
+  [80, 48],
+]) {
+  test(`receipt at ${width}mm: absent GST fields => output identical to the approved layout`, () => {
     const s = loadServer();
     try {
-      const name = "SHAJ Retail Products Private Limited Chennai";
-      const lines = s
-        .buildReceipt({ shopName: name }, { paperWidth: 58 })
-        .text.split("\n");
-      assert.ok(lines.every((l) => l.length <= 32));
+      assert.equal(s.buildReceipt(sample, { paperWidth: width }).text, GOLDEN[width]);
+      // blank / null optional fields count as absent
+      assert.equal(
+        s.buildReceipt(
+          { ...sample, gstin: "", cgst: null, sgst: undefined, igst: " " },
+          { paperWidth: width },
+        ).text,
+        GOLDEN[width],
+      );
     } finally {
       s.restore();
     }
-  },
-);
+  });
+
+  test(`receipt at ${width}mm: GSTIN under shop name, CGST/SGST replace GST`, () => {
+    const s = loadServer();
+    try {
+      const { text } = s.buildReceipt(gstSample, { paperWidth: width });
+      const lines = text.split("\n");
+      assert.equal(lines[0].trim(), "SHAJ Retail");
+      assert.equal(lines[1].trim(), "GSTIN: 33ABCDE1234F1Z5");
+      assert.match(lines[2], /^-+$/);
+      assert.ok(!lines.some((l) => l.startsWith("GST:")), "single GST line must be replaced");
+      assert.ok(!lines.some((l) => l.startsWith("IGST:")));
+      const sub = lines.indexOf("Subtotal: 115.38");
+      assert.deepEqual(lines.slice(sub, sub + 4), [
+        "Subtotal: 115.38",
+        "CGST: 2.89",
+        "SGST: 2.88",
+        "Discount: 0",
+      ]);
+      assertWithin(text, chars);
+    } finally {
+      s.restore();
+    }
+  });
+
+  test(`receipt at ${width}mm: IGST printed in place of GST`, () => {
+    const s = loadServer();
+    try {
+      const { text } = s.buildReceipt({ ...sample, igst: 5.77 }, { paperWidth: width });
+      const lines = text.split("\n");
+      assert.ok(lines.includes("IGST: 5.77"));
+      assert.ok(!lines.some((l) => /^(GST|CGST|SGST):/.test(l)));
+      assertWithin(text, chars);
+    } finally {
+      s.restore();
+    }
+  });
+
+  test(`receipt at ${width}mm: long shop name and GSTIN never exceed ${chars} chars`, () => {
+    const s = loadServer();
+    try {
+      const shopName = "SHAJ Retail Products Private Limited Chennai Main Road Branch";
+      const gstin = "33ABCDE1234F1Z5-EXTRA-LONG-IDENTIFIER-VALUE-0000000000";
+      const { text } = s.buildReceipt({ ...gstSample, shopName, gstin }, { paperWidth: width });
+      assertWithin(text, chars);
+      const lines = text.split("\n");
+      const rule = lines.findIndex((l) => /^-+$/.test(l));
+      const header = lines.slice(0, rule).map((l) => l.trim());
+      // nothing is dropped: name and GSTIN rebuild from the wrapped lines
+      const g = header.findIndex((l) => l.startsWith("GSTIN:"));
+      assert.ok(g > 1, "shop name should span several lines");
+      assert.equal(header.slice(0, g).join(" "), shopName);
+      assert.equal(header.slice(g).join(""), `GSTIN:${gstin}`);
+    } finally {
+      s.restore();
+    }
+  });
+}
+
+test("V1 Gate 4: GSTIN / CGST / SGST lines", () => {
+  const s = loadServer();
+  try {
+    const { text } = s.buildReceipt(
+      { shopName: "S", gstin: "33ABCDE1234F1Z5", cgst: 2.5, sgst: 2.5 },
+      {},
+    );
+    assert.match(text, /GSTIN: 33ABCDE1234F1Z5/);
+    assert.match(text, /^CGST: 2\.50$/m);
+    assert.match(text, /^SGST: 2\.50$/m);
+    assert.doesNotMatch(text, /^GST:/m);
+  } finally {
+    s.restore();
+  }
+});
+
+test("V1 Gate 4: shop name longer than paper width is wrapped, not clipped", () => {
+  const s = loadServer();
+  try {
+    const name = "SHAJ Retail Products Private Limited Chennai";
+    const lines = s.buildReceipt({ shopName: name }, { paperWidth: 58 }).text.split("\n");
+    assert.ok(lines.every((l) => l.length <= 32));
+    assert.equal(lines[0], "  SHAJ Retail Products Private");
+    assert.equal(lines[1], "        Limited Chennai");
+  } finally {
+    s.restore();
+  }
+});
+
+test("receipt: GST-only payload keeps the single GST line", () => {
+  const s = loadServer();
+  try {
+    const { text } = s.buildReceipt({ shopName: "S", gst: 5 }, {});
+    assert.match(text, /^GST: 5$/m);
+    assert.doesNotMatch(text, /GSTIN|CGST|SGST|IGST/);
+  } finally {
+    s.restore();
+  }
+});
