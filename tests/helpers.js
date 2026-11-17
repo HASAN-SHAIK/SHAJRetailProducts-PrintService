@@ -17,6 +17,8 @@ function loadServer(env = {}) {
     USE_ESC_POS: "",
     CENTER_HEADER: "",
     LEFT_MARGIN_SPACES: "",
+    SUMATRA_PRINT_SETTINGS: "",
+    PORT: "",
     RECEIPT_TEMP_PATH: path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "printsvc-")),
       "temp.txt",
@@ -25,8 +27,10 @@ function loadServer(env = {}) {
   const merged = { ...base, ...env };
   for (const [k, v] of Object.entries(merged)) {
     saved[k] = process.env[k];
-    if (v === "" || v === undefined) delete process.env[k];
-    else process.env[k] = v;
+    // Set to "" (not delete): server.js calls dotenv, which fills in any variable
+    // that is absent, so a developer's local .env would leak into the tests.
+    // dotenv never overrides a variable that already exists.
+    process.env[k] = v === undefined ? "" : v;
   }
   delete require.cache[require.resolve(SERVER)];
   const mod = require(SERVER);
